@@ -5,15 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Nook • Live Tracking</title>
 
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
-  <!-- Routing via free OSRM demo -->
+  <!-- Routing (OSRM) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <link rel="stylesheet" href="assets/style.css" />
   <script defer src="assets/icons.js"></script>
+  <style>
+    /* make sure our panes sit above the route and tiles */
+    .leaflet-pane.my-user-pane { z-index: 650; }
+    .leaflet-pane.my-route-pane { z-index: 640; }
+  </style>
 </head>
 <body>
   <header class="appbar">Live tracking</header>
@@ -45,45 +51,116 @@
     const destText = $("#destText"), etaEl = $("#eta"), distEl = $("#dist"), speedEl = $("#speed"), msg = $("#msg");
     const recenterBtn = $("#recenter");
 
+    // --- Parse destination ---
     const params = new URLSearchParams(location.search);
     if (!params.has('dest')) location.replace('index.html');
     const [dlat, dlng] = params.get('dest').split(',').map(Number);
     const DEST = L.latLng(dlat, dlng);
     destText.textContent = `${DEST.lat.toFixed(5)}, ${DEST.lng.toFixed(5)}`;
 
-    let map = L.map('map', { zoomControl:false }).setView(DEST, 16);
+    // --- Map & panes ---
+    const map = L.map('map', { zoomControl:false }).setView(DEST, 15);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
     L.control.zoom({ position:'bottomright' }).addTo(map);
 
-    const youMarker = L.marker(DEST, { icon: window.NookIcons.user }).addTo(map);
+    // custom panes so markers never "disappear" behind anything
+    map.createPane('my-user-pane');
+    map.createPane('my-route-pane');
+
+    // --- Markers ---
+    const youMarker = L.marker(DEST, { icon: window.NookIcons.user, pane:'my-user-pane' }).addTo(map);
     const destMarker = L.marker(DEST, { icon: window.NookIcons.flag }).addTo(map);
 
+    // --- Routing (styled purple line on our pane) ---
     const router = L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' });
+
     const routing = L.Routing.control({
-      router, waypoints: [], fitSelectedRoutes: false, addWaypoints:false, show:false, routeWhileDragging:false
+      router,
+      waypoints: [],
+      fitSelectedRoutes: false,
+      addWaypoints: false,
+      show: false,
+      lineOptions: {
+        addWaypoints: false,
+        extendToWaypoints: true,
+        missingRouteTolerance: 0,
+        styles: [
+          { color: '#6c4df6', weight: 6, opacity: 1 },
+          { color: '#ffffff', weight: 2, opacity: 0.6 }
+        ],
+        pane: 'my-route-pane'
+      },
+      createMarker: () => null // we draw our own markers
     }).addTo(map);
 
     routing.on('routesfound', (e) => {
-      const r = e.routes[0]; if (!r) return;
+      const r = e.routes?.[0];
+      if (!r) return;
       const secs = Math.round(r.summary.totalTime);
-      const km = r.summary.totalDistance/1000;
+      const km = r.summary.totalDistance / 1000;
       etaEl.textContent = secs < 90 ? `${secs}s` : `${Math.round(secs/60)} min`;
       distEl.textContent = km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1)} km`;
-      msg.textContent = (km < 0.03) ? 'Arrived 🎉' : '';
+      msg.textContent = km < 0.03 ? 'Arrived 🎉' : '';
     });
 
-    let follow = true, lastPos = null;
-    recenterBtn.addEventListener('click', () => { follow = true; if (lastPos) map.setView(lastPos, 17, {animate:true}); });
+    routing.on('routingerror', (e) => {
+      msg.textContent = 'Routing error. Network busy — retrying…';
+    });
 
-    function startWatching() {
-      if (!('geolocation' in navigator)) { msg.textContent = 'Geolocation not supported.'; return; }
+    // --- Follow / recenter ---
+    let follow = true, lastPos = null;
+    recenterBtn.addEventListener('click', () => {
+      follow = true;
+      if (lastPos) map.setView(lastPos, 17, {animate:true});
+    });
+
+    // --- Seed position once, then start watching ---
+    function seedPositionAndWatch() {
+      if (!('geolocation' in navigator)) {
+        msg.textContent = 'Geolocation not supported.';
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          lastPos = L.latLng(latitude, longitude);
+          youMarker.setLatLng(lastPos);
+          map.setView(lastPos, 16);
+          routeFrom(lastPos);       // draw first route
+          startWatch();             // then start live updates
+        },
+        (err) => { msg.textContent = 'Location error: ' + err.message; },
+        { enableHighAccuracy:true, timeout:20000, maximumAge:0 }
+      );
+    }
+
+    // throttle OSRM calls (once every 2s or if moved > 15m)
+    let lastRouteAt = 0;
+    let lastRoutedLatLng = null;
+    function routeFrom(origin) {
+      const now = Date.now();
+      const movedEnough = !lastRoutedLatLng || origin.distanceTo(lastRoutedLatLng) > 15;
+      if (!movedEnough && now - lastRouteAt < 2000) return;
+
+      lastRouteAt = now;
+      lastRoutedLatLng = origin;
+      routing.setWaypoints([ origin, DEST ]);
+    }
+
+    function startWatch() {
       navigator.geolocation.watchPosition(
         (pos) => {
           const { latitude, longitude, speed } = pos.coords;
           lastPos = L.latLng(latitude, longitude);
           youMarker.setLatLng(lastPos);
-          routing.setWaypoints([ lastPos, DEST ]);
-          if (typeof speed === 'number' && !Number.isNaN(speed)) speedEl.textContent = `${Math.max(0, speed*3.6).toFixed(1)} km/h`; else speedEl.textContent = '—';
+
+          // speed m/s -> km/h
+          speedEl.textContent = (typeof speed === 'number' && !Number.isNaN(speed))
+            ? `${Math.max(0, speed*3.6).toFixed(1)} km/h`
+            : '—';
+
+          routeFrom(lastPos);
           if (follow) map.setView(lastPos, 17);
           follow = false;
         },
@@ -92,7 +169,7 @@
       );
     }
 
-    startWatching();
+    seedPositionAndWatch();
   </script>
 </body>
 </html>
