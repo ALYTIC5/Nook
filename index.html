@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Nook • Set Destination</title>
+
+  <!-- Leaflet (map) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <link rel="stylesheet" href="assets/style.css" />
+  <script defer src="assets/icons.js"></script>
+</head>
+<body>
+  <header class="appbar">Set your destination</header>
+
+  <main id="app">
+    <div id="map"></div>
+
+    <div class="panel">
+      <div class="row">
+        <div>
+          <div class="label">Your location</div>
+          <div id="startText">Locating…</div>
+        </div>
+        <button id="locateBtn" class="pill">Recenter</button>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Destination</div>
+          <div id="destText" class="muted">Tap on the map to choose</div>
+        </div>
+        <button id="clearBtn" class="ghost" disabled>Clear</button>
+      </div>
+
+      <button id="goBtn" class="cta" disabled>Start tracking</button>
+      <div id="msg" class="msg"></div>
+    </div>
+  </main>
+
+  <script>
+    // Globals
+    let map, startMarker, destMarker, startLatLng, destLatLng;
+
+    const $ = (s) => document.querySelector(s);
+    const startText = $("#startText");
+    const destText  = $("#destText");
+    const goBtn     = $("#goBtn");
+    const clearBtn  = $("#clearBtn");
+    const locateBtn = $("#locateBtn");
+    const msg       = $("#msg");
+
+    function enableGo() {
+      goBtn.disabled = !(startLatLng && destLatLng);
+    }
+
+    function initMap(center) {
+      map = L.map('map', { zoomControl:false }).setView(center, 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+
+      // zoom control bottom-right like the mock
+      L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+      // Your marker
+      startMarker = L.marker(center, { icon: window.NookIcons.user }).addTo(map);
+      startText.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`;
+
+      // Tap to set destination
+      map.on('click', (e) => {
+        destLatLng = e.latlng;
+        if (!destMarker) {
+          destMarker = L.marker(destLatLng, { draggable:true, icon: window.NookIcons.pin }).addTo(map);
+          destMarker.on('dragend', () => {
+            destLatLng = destMarker.getLatLng();
+            destText.textContent = `${destLatLng.lat.toFixed(5)}, ${destLatLng.lng.toFixed(5)}`;
+            enableGo();
+          });
+        } else {
+          destMarker.setLatLng(destLatLng);
+        }
+        destText.textContent = `${destLatLng.lat.toFixed(5)}, ${destLatLng.lng.toFixed(5)}`;
+        clearBtn.disabled = false;
+        enableGo();
+      });
+    }
+
+    // ask for position once to start the experience
+    function getStartLocation() {
+      if (!('geolocation' in navigator)) {
+        msg.textContent = 'Geolocation is not supported on this device.';
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          startLatLng = L.latLng(pos.coords.latitude, pos.coords.longitude);
+          if (!map) initMap(startLatLng);
+          startMarker.setLatLng(startLatLng);
+          map.setView(startLatLng, 16, { animate:true });
+          startText.textContent = `${startLatLng.lat.toFixed(5)}, ${startLatLng.lng.toFixed(5)}`;
+          enableGo();
+        },
+        (err) => {
+          msg.textContent = 'Location error: ' + err.message + ' (Tip: must be HTTPS and allow location.)';
+        },
+        { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
+      );
+    }
+
+    // Wire up buttons
+    goBtn.addEventListener('click', () => {
+      const dest = `${destLatLng.lat.toFixed(6)},${destLatLng.lng.toFixed(6)}`;
+      // We’ll get live location again on the next page; only pass the destination
+      window.location.href = `track.html?dest=${encodeURIComponent(dest)}`;
+    });
+
+    clearBtn.addEventListener('click', () => {
+      if (destMarker) destMarker.remove();
+      destMarker = null;
+      destLatLng = null;
+      destText.textContent = 'Tap on the map to choose';
+      clearBtn.disabled = true;
+      enableGo();
+    });
+
+    locateBtn.addEventListener('click', () => {
+      getStartLocation();
+    });
+
+    // boot
+    getStartLocation();
+  </script>
+</body>
+</html>
