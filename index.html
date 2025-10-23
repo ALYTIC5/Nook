@@ -3,9 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-  <title>Nook • Set Destination</title>
+  <title>Nook • Choose Destination</title>
 
-  <!-- Leaflet (free map UI) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
@@ -13,7 +12,7 @@
   <script defer src="assets/icons.js"></script>
 </head>
 <body>
-  <header class="appbar">Set your destination</header>
+  <header class="appbar">Choose your destination</header>
 
   <main id="app">
     <div id="map"></div>
@@ -42,73 +41,61 @@
 
   <script>
     let map, startMarker, destMarker, startLatLng, destLatLng;
+    const $ = (s)=>document.querySelector(s);
+    const startText=$("#startText"), destText=$("#destText"), goBtn=$("#goBtn"), clearBtn=$("#clearBtn"), locateBtn=$("#locateBtn"), msg=$("#msg");
 
-    const $ = (s) => document.querySelector(s);
-    const startText = $("#startText");
-    const destText  = $("#destText");
-    const goBtn     = $("#goBtn");
-    const clearBtn  = $("#clearBtn");
-    const locateBtn = $("#locateBtn");
-    const msg       = $("#msg");
+    function enableGo(){ goBtn.disabled = !(startLatLng && destLatLng); }
 
-    function enableGo() { goBtn.disabled = !(startLatLng && destLatLng); }
-
-    function initMap(center) {
+    function initMap(center){
       map = L.map('map', { zoomControl:false }).setView(center, 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19, attribution: '&copy; OpenStreetMap'
-      }).addTo(map);
-      L.control.zoom({ position: 'bottomright' }).addTo(map);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap'}).addTo(map);
+      L.control.zoom({position:'bottomright'}).addTo(map);
 
-      startMarker = L.marker(center, { icon: window.NookIcons.user }).addTo(map);
+      startMarker = L.marker(center,{icon:window.NookIcons.user}).addTo(map);
       startText.textContent = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`;
 
-      map.on('click', (e) => {
+      map.on('click', (e)=>{
         destLatLng = e.latlng;
-        if (!destMarker) {
-          destMarker = L.marker(destLatLng, { draggable:true, icon: window.NookIcons.pin }).addTo(map);
-          destMarker.on('dragend', () => {
+        if(!destMarker){
+          destMarker = L.marker(destLatLng,{draggable:true,icon:window.NookIcons.pin}).addTo(map);
+          destMarker.on('dragend', ()=>{
             destLatLng = destMarker.getLatLng();
             destText.textContent = `${destLatLng.lat.toFixed(5)}, ${destLatLng.lng.toFixed(5)}`;
             enableGo();
           });
-        } else {
+        }else{
           destMarker.setLatLng(destLatLng);
         }
         destText.textContent = `${destLatLng.lat.toFixed(5)}, ${destLatLng.lng.toFixed(5)}`;
-        clearBtn.disabled = false;
-        enableGo();
+        clearBtn.disabled = false; enableGo();
       });
     }
 
-    function getStartLocation() {
-      if (!('geolocation' in navigator)) {
-        msg.textContent = 'Geolocation not supported.';
-        return;
-      }
+    function getStartLocation(){
+      if(!('geolocation' in navigator)){ msg.textContent='Geolocation not supported.'; return; }
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
+        (pos)=>{
           startLatLng = L.latLng(pos.coords.latitude, pos.coords.longitude);
-          if (!map) initMap(startLatLng);
+          if(!map) initMap(startLatLng);
           startMarker.setLatLng(startLatLng);
-          map.setView(startLatLng, 16, { animate:true });
+          map.setView(startLatLng, 16, {animate:true});
           startText.textContent = `${startLatLng.lat.toFixed(5)}, ${startLatLng.lng.toFixed(5)}`;
           enableGo();
         },
-        (err) => { msg.textContent = 'Location error: ' + err.message + ' (Needs HTTPS & permission)'; },
-        { enableHighAccuracy:true, timeout:15000, maximumAge:0 }
+        (err)=>{ msg.textContent='Location error: '+err.message; },
+        {enableHighAccuracy:true,timeout:15000,maximumAge:0}
       );
     }
 
-    goBtn.addEventListener('click', () => {
+    goBtn.addEventListener('click', ()=>{
       const dest = `${destLatLng.lat.toFixed(6)},${destLatLng.lng.toFixed(6)}`;
       location.href = `track.html?dest=${encodeURIComponent(dest)}`;
     });
-    clearBtn.addEventListener('click', () => {
-      if (destMarker) destMarker.remove();
-      destMarker = null; destLatLng = null;
-      destText.textContent = 'Tap on the map to choose';
-      clearBtn.disabled = true; enableGo();
+    clearBtn.addEventListener('click', ()=>{
+      if(destMarker) destMarker.remove();
+      destMarker=null; destLatLng=null;
+      destText.textContent='Tap on the map to choose';
+      clearBtn.disabled=true; enableGo();
     });
     locateBtn.addEventListener('click', getStartLocation);
 
