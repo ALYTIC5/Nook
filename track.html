@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Nook • Live Tracking</title>
 
+  <!-- Leaflet (map UI) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
@@ -12,7 +13,8 @@
   <script defer src="assets/icons.js"></script>
 
   <style>
-    .leaflet-pane.user-pane { z-index: 650; }
+    /* keep our layers always visible */
+    .leaflet-pane.user-pane  { z-index: 650; }
     .leaflet-pane.route-pane { z-index: 640; }
   </style>
 </head>
@@ -42,48 +44,66 @@
   </main>
 
   <script>
+    // ========== helpers ==========
     const $ = (s)=>document.querySelector(s);
     const destText=$("#destText"), etaEl=$("#eta"), distEl=$("#dist"), speedEl=$("#speed"), msg=$("#msg");
     const recenterBtn=$("#recenter");
 
-    // Parse destination (?dest=lat,lng)
     const params = new URLSearchParams(location.search);
     if(!params.has('dest')) location.replace('index.html');
     const [dlat, dlng] = params.get('dest').split(',').map(Number);
     const DEST = L.latLng(dlat, dlng);
     destText.textContent = `${DEST.lat.toFixed(5)}, ${DEST.lng.toFixed(5)}`;
 
-    // Map
+    // ========== map ==========
     const map = L.map('map', { zoomControl:false }).setView(DEST, 15);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap'}).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
     L.control.zoom({ position:'bottomright' }).addTo(map);
 
     map.createPane('user-pane');
     map.createPane('route-pane');
 
-    const youMarker = L.marker(DEST, { icon: window.NookIcons.user, pane:'user-pane' }).addTo(map);
+    const youMarker = L.marker(DEST, { icon: window.NookIcons.user, pane: 'user-pane' }).addTo(map);
     const destMarker = L.marker(DEST, { icon: window.NookIcons.flag }).addTo(map);
 
-    // Route polyline we manage ourselves
-    let routeLine = L.polyline([], { color:'#6c4df6', weight:6, opacity:1, pane:'route-pane' }).addTo(map);
+    // Polyline = "polylineCoordinates" from the tutorial
+    const routeLine = L.polyline([], { color:'#7B61FF', weight:6, opacity:1, pane:'route-pane' }).addTo(map);
 
-    // Fetch route from OSRM and draw it
+    // ========== ROUTING (like getPolyPoints) ==========
+    // try multiple public OSRM instances (same API) — no keys, all free
+    const OSRM_SERVERS = [
+      'https://router.project-osrm.org',
+      'https://routing.openstreetmap.de/routed-car',
+      'https://osrm-demo.maptiler.com' // public demo
+    ];
+
+    async function getRouteCoords(origin, dest) {
+      // Returns an array of [lat, lng] just like polylineCoordinates
+      let lastErr = null;
+      for (const base of OSRM_SERVERS) {
+        try {
+          const url = `${base}/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
+          const res = await fetch(url, { cache:'no-store' });
+          if (!res.ok) throw new Error(`HTTP ${res.status} @ ${new URL(url).host}`);
+          const json = await res.json();
+          if (!json.routes?.length) throw new Error('No route');
+          return json.routes[0]; // { geometry, distance, duration }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr || new Error('Routing failed');
+    }
+
     async function drawRoute(origin, dest) {
       try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
-        const res = await fetch(url, { cache:'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (!json.routes || !json.routes.length) throw new Error('No route');
-        const r = json.routes[0];
-
-        // geojson -> [ [lat,lng], ... ]
-        const coords = r.geometry.coordinates.map(([lng,lat])=>[lat,lng]);
+        const r = await getRouteCoords(origin, dest);
+        const coords = r.geometry.coordinates.map(([lng,lat]) => [lat,lng]); // to Leaflet [lat,lng]
         routeLine.setLatLngs(coords);
 
         const secs = Math.round(r.duration);
         const km = r.distance/1000;
-        etaEl.textContent = secs < 90 ? `${secs}s` : `${Math.round(secs/60)} min`;
+        etaEl.textContent  = secs < 90 ? `${secs}s` : `${Math.round(secs/60)} min`;
         distEl.textContent = km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1)} km`;
         msg.textContent = km < 0.03 ? 'Arrived 🎉' : '';
       } catch (e) {
@@ -91,52 +111,56 @@
       }
     }
 
-    // Throttle route refresh
+    // ========== LIVE LOCATION (like getCurrentLocation) ==========
+    let lastPos = null, follow = true;
+    recenterBtn.addEventListener('click', ()=>{ follow = true; if (lastPos) map.setView(lastPos, 17, {animate:true}); });
+
+    // throttle route recalcs (like calling setState only when needed)
     let lastRouteAt = 0;
     let lastRouted = null;
     function maybeRouteFrom(pos) {
       const now = Date.now();
-      const moved = !lastRouted || pos.distanceTo(lastRouted) > 15;
-      if (moved || (now - lastRouteAt) > 2500) {
+      const movedEnough = !lastRouted || pos.distanceTo(lastRouted) > 15; // meters
+      const cooledDown  = (now - lastRouteAt) > 2500;                    // ms
+      if (movedEnough || cooledDown) {
         lastRouted = pos; lastRouteAt = now;
         drawRoute(pos, DEST);
       }
     }
 
-    // Seed position, then watch
-    let lastPos = null, follow=true;
-    recenterBtn.addEventListener('click', ()=>{ follow=true; if(lastPos) map.setView(lastPos, 17, {animate:true}); });
+    function seedAndWatch() {
+      if (!('geolocation' in navigator)) { msg.textContent = 'Geolocation not supported.'; return; }
 
-    function seedAndWatch(){
-      if(!('geolocation' in navigator)){ msg.textContent='Geolocation not supported.'; return; }
-
+      // seed once (== first "currentLocation" in the Flutter post)
       navigator.geolocation.getCurrentPosition(
-        (p)=>{
+        (p)=> {
           lastPos = L.latLng(p.coords.latitude, p.coords.longitude);
           youMarker.setLatLng(lastPos);
           map.setView(lastPos, 16);
-          maybeRouteFrom(lastPos);
-          watch();
+          maybeRouteFrom(lastPos);         // first route draw
+          startWatch();                    // then begin real-time updates
         },
-        (err)=>{ msg.textContent='Location error: '+err.message; },
+        (err)=> { msg.textContent = 'Location error: ' + err.message; },
         { enableHighAccuracy:true, timeout:20000, maximumAge:0 }
       );
     }
 
-    function watch(){
+    function startWatch() {
       navigator.geolocation.watchPosition(
-        (p)=>{
+        (p)=> {
           lastPos = L.latLng(p.coords.latitude, p.coords.longitude);
           youMarker.setLatLng(lastPos);
-          // speed m/s -> km/h
+
           const sp = p.coords.speed;
-          speedEl.textContent = (typeof sp==='number' && !Number.isNaN(sp)) ? `${Math.max(0, sp*3.6).toFixed(1)} km/h` : '—';
+          speedEl.textContent = (typeof sp === 'number' && !Number.isNaN(sp))
+            ? `${Math.max(0, sp*3.6).toFixed(1)} km/h`
+            : '—';
 
           maybeRouteFrom(lastPos);
           if (follow) map.setView(lastPos, 17);
           follow = false;
         },
-        (err)=>{ msg.textContent='Location error: '+err.message; },
+        (err)=> { msg.textContent = 'Location error: ' + err.message; },
         { enableHighAccuracy:true, maximumAge:0, timeout:20000 }
       );
     }
