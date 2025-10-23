@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Nook • Live Tracking</title>
 
-  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
-  <!-- Routing (OSRM) -->
+  <!-- Routing via free OSRM demo -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
@@ -43,95 +42,52 @@
 
   <script>
     const $ = (s) => document.querySelector(s);
-    const destText = $("#destText");
-    const etaEl = $("#eta");
-    const distEl = $("#dist");
-    const speedEl = $("#speed");
-    const msg = $("#msg");
+    const destText = $("#destText"), etaEl = $("#eta"), distEl = $("#dist"), speedEl = $("#speed"), msg = $("#msg");
     const recenterBtn = $("#recenter");
 
-    // Parse dest from query string (?dest=lat,lng)
     const params = new URLSearchParams(location.search);
-    if (!params.has('dest')) {
-      location.replace('index.html');
-    }
+    if (!params.has('dest')) location.replace('index.html');
     const [dlat, dlng] = params.get('dest').split(',').map(Number);
     const DEST = L.latLng(dlat, dlng);
     destText.textContent = `${DEST.lat.toFixed(5)}, ${DEST.lng.toFixed(5)}`;
 
-    // Map
     let map = L.map('map', { zoomControl:false }).setView(DEST, 16);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'&copy; OpenStreetMap' }).addTo(map);
+    L.control.zoom({ position:'bottomright' }).addTo(map);
 
-    // Markers
     const youMarker = L.marker(DEST, { icon: window.NookIcons.user }).addTo(map);
     const destMarker = L.marker(DEST, { icon: window.NookIcons.flag }).addTo(map);
 
-    let follow = true;
-    recenterBtn.addEventListener('click', () => { follow = true; if (lastPos) map.setView(lastPos, 17, {animate:true}); });
-
-    // Routing control (uses free OSRM demo server)
-    const router = L.Routing.osrmv1({
-      serviceUrl: 'https://router.project-osrm.org/route/v1'
-    });
-
-    let routing = L.Routing.control({
-      router,
-      waypoints: [],
-      fitSelectedRoutes: false,
-      routeWhileDragging: false,
-      addWaypoints: false,
-      show: false,           // hide the default turn list UI
-      collapsible: false
+    const router = L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' });
+    const routing = L.Routing.control({
+      router, waypoints: [], fitSelectedRoutes: false, addWaypoints:false, show:false, routeWhileDragging:false
     }).addTo(map);
 
     routing.on('routesfound', (e) => {
-      const r = e.routes[0];
-      if (!r) return;
+      const r = e.routes[0]; if (!r) return;
       const secs = Math.round(r.summary.totalTime);
-      const km = (r.summary.totalDistance/1000);
+      const km = r.summary.totalDistance/1000;
       etaEl.textContent = secs < 90 ? `${secs}s` : `${Math.round(secs/60)} min`;
       distEl.textContent = km < 1 ? `${Math.round(km*1000)} m` : `${km.toFixed(1)} km`;
-      if (km < 0.03) {
-        msg.textContent = 'Arrived 🎉';
-      } else {
-        msg.textContent = '';
-      }
+      msg.textContent = (km < 0.03) ? 'Arrived 🎉' : '';
     });
 
-    // Live location
-    let lastPos = null;
+    let follow = true, lastPos = null;
+    recenterBtn.addEventListener('click', () => { follow = true; if (lastPos) map.setView(lastPos, 17, {animate:true}); });
+
     function startWatching() {
-      if (!('geolocation' in navigator)) {
-        msg.textContent = 'Geolocation not supported on this device.';
-        return;
-      }
+      if (!('geolocation' in navigator)) { msg.textContent = 'Geolocation not supported.'; return; }
       navigator.geolocation.watchPosition(
         (pos) => {
           const { latitude, longitude, speed } = pos.coords;
           lastPos = L.latLng(latitude, longitude);
           youMarker.setLatLng(lastPos);
-
-          // speed in m/s -> km/h (may be null)
-          if (typeof speed === 'number' && !Number.isNaN(speed)) {
-            const kph = Math.max(0, speed) * 3.6;
-            speedEl.textContent = `${kph.toFixed(1)} km/h`;
-          } else {
-            speedEl.textContent = '—';
-          }
-
-          // update route to new position
           routing.setWaypoints([ lastPos, DEST ]);
-
+          if (typeof speed === 'number' && !Number.isNaN(speed)) speedEl.textContent = `${Math.max(0, speed*3.6).toFixed(1)} km/h`; else speedEl.textContent = '—';
           if (follow) map.setView(lastPos, 17);
-          follow = false; // stop aggressive follow until user hits recenter
+          follow = false;
         },
-        (err) => {
-          msg.textContent = 'Location error: ' + err.message;
-        },
+        (err) => { msg.textContent = 'Location error: ' + err.message; },
         { enableHighAccuracy:true, maximumAge:0, timeout:20000 }
       );
     }
